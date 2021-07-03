@@ -5,13 +5,23 @@ from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 
 
-def run(model_name, question, context):
-    # TODO remove padding tokens like [SEP]
+def run(model_name, question, context, sup_facts):
+    # TODO remove tokens like [SEP]? tokens[0], tokens[12], tokens[len-1]
+    # TODO kmeans clustering?
     tokenizer = BertTokenizer.from_pretrained(model_name)
-    model = BertForQuestionAnswering.from_pretrained(model_name, output_hidden_states=True, return_dict=True)
+    pretrained_weights = torch.load("./squad/squad.bin", map_location=torch.device('cpu'))
+
+    model = BertForQuestionAnswering.from_pretrained(model_name,
+                                                     state_dict=pretrained_weights, output_hidden_states=True,
+                                                     return_dict=True)
+    # model = BertForQuestionAnswering.from_pretrained(model_name, output_hidden_states=True, return_dict=True)
     input_ids = tokenizer.encode(question, context)
     tokens = tokenizer.convert_ids_to_tokens(input_ids)
     sep_index = input_ids.index(tokenizer.sep_token_id)
+
+    sup_ids = tokenizer.encode(sup_facts)
+    sup_tokens = tokenizer.convert_ids_to_tokens(sup_ids)
+    # sup_start_id, sup_end_if = get_sup_ids(tokens, sup_tokens)
 
     # Segment A is the question, segment B is the answer?
     # The number of segment A tokens includes the [SEP] token istelf.
@@ -40,15 +50,49 @@ def run(model_name, question, context):
 
     for i, layer in enumerate(hidden_states):
         # Token embedding of one of the 118 tokens in the question text
-        hidden_layer = layer.squeeze(0)
+        # Remove padding s
+        hidden_layer = layer[0][:len(tokens)]
+        hidden_layer = hidden_layer.squeeze(0)
         hidden_layer_np = hidden_layer.cpu().detach().numpy()
 
         reduction = PCA(n_components=2)
         reduced_layer = reduction.fit_transform(hidden_layer_np)
-        plot_hidden_states(reduced_layer, tokens, question, answer, i)
+        question_tokens, context_tokens = get_tokens_lists(tokens)
+        plot_hidden_states(reduced_layer, tokens, question_tokens, context_tokens, answer, i, sep_index)
 
 
-def plot_hidden_states(reduced_layer, tokens, question, answer, layer_index):
+# TODO Test
+def get_sup_ids(tokens, sup_tokens):
+    start_id = 0
+    end_id = 0
+    sequence = False
+    index = 0
+    for i in range(len(tokens)):
+        if tokens[i] == sup_tokens[index]:
+            if sequence:
+                index += 1
+            else:
+                start_id = i
+                sequence = True
+        else:
+            if sequence:
+                end_id = i - 1
+                sequence = False
+    return start_id, end_id
+
+
+def get_tokens_lists(tokens):
+    question_tokens = []
+    context_tokens = []
+    for i in range(0, len(tokens)):
+        if tokens[i] == '[SEP]':
+            question_tokens = tokens[1:i]
+            context_tokens = tokens[i + 1:len(tokens) - 1]
+            break
+    return question_tokens, context_tokens
+
+
+def plot_hidden_states(reduced_layer, tokens, question_tokens, context_tokens, answer, layer_index, sep_index):
     # TODO Supporting facts tokens
     # TODO differentiate if token was in question or context (based on where it was -> string embedding first question then context)
     x_data = [x[0] for x in reduced_layer]
@@ -57,10 +101,10 @@ def plot_hidden_states(reduced_layer, tokens, question, answer, layer_index):
     for i in range(len(x_data)):
         color = "gray"
         marker = "o"
-        if tokens[i] == answer:
+        if tokens[i] in answer:
             color = "red"
             marker = "d"
-        elif tokens[i] in question:
+        elif tokens[i] in question_tokens and i < 12:
             color = "orange"
             marker = "*"
         plt.scatter(x_data[i], y_data[i], c=color, marker=marker)
@@ -77,9 +121,14 @@ if __name__ == '__main__':
 
     context = "Currently detention is one of the most common punishments in schools in the United States, the UK, Ireland, " \
               "Singapore and other countries. It requires the pupil to remain in school at a given time in the school day " \
-              "(such as lunch, recess or after school); or even to attend school on a non-school day, e.g. \"Saturday detention\" " \
+              "(such as lunch, recess or after school); or even to attend school on a non-school day, e.g. Saturday detention " \
               "held at some schools. During detention,students normally have to sit in a classroom and do work, write lines or" \
               " a punishment essay, or sit quietly."
 
-    model_name = 'bert-large-uncased-whole-word-masking-finetuned-squad'
-    run(model_name, question, context)
+    # TODO save the indexes of sup facts in context
+    supporting_facts = "Currently detention is one of the most common punishments in schools in the United States, the UK, Ireland, " \
+                       "Singapore and other countries."
+
+    # model_name = 'bert-large-uncased-whole-word-masking-finetuned-squad'
+    model_name = 'csarron/bert-base-uncased-squad-v1'
+    run(model_name, question, context, supporting_facts)
